@@ -18,7 +18,10 @@ test('对话工具按作者、标题、内容和 SHA 准备清单，确认后才
     if (route === '/api/v4/user') res.end(JSON.stringify({ id: 7, username: 'tester', name: 'Tester' }));
     else if (route === '/api/v4/projects/test/repo/repository/branches') res.end(JSON.stringify([{ name: 'master' }, { name: 'release' }]));
     else if (route === '/api/v4/projects/test/repo/repository/branches/release') res.end(JSON.stringify({ commit: { id: targetHead }, can_push: true, protected: false }));
-    else if (route === '/api/v4/projects/test/repo/repository/commits') res.end(JSON.stringify([
+    else if (route === '/api/v4/projects/test/repo/repository/commits') res.end(JSON.stringify((new URL(req.url, 'http://localhost')).searchParams.get('ref_name') === 'master' ? [
+      { id: sha('f'), short_id: 'ffffffff', title: 'latest fix', message: 'latest fix', author_name: 'liuhouchao', author_email: 'liuhouchao@example.com', created_at: '2026-10-30T01:00:00Z' },
+      { id: sha('b'), short_id: 'bbbbbbbb', title: 'fix: login', message: 'fix: login', author_name: 'liuhouchao', author_email: 'liuhouchao@example.com', created_at: '2026-10-29T01:00:00Z' }
+    ] : [
       { id: sha('b'), short_id: 'bbbbbbbb', title: 'fix: login', message: 'fix: login', author_name: 'liuhouchao', author_email: 'liuhouchao@example.com', created_at: '2026-10-29T01:00:00Z' },
       { id: sha('d'), short_id: 'dddddddd', title: 'other change', message: 'other change', author_name: 'someone', author_email: 'other@example.com', created_at: '2026-10-29T02:00:00Z' }
     ]));
@@ -37,13 +40,16 @@ test('对话工具按作者、标题、内容和 SHA 准备清单，确认后才
     const body = JSON.parse(raw);
     assert.equal(body.model, 'tool-model');
     assert.ok(body.tools.some(x => x.function.name === 'prepare_cherry_pick'));
-    const scenario = Math.floor(modelCalls / 4), step = modelCalls % 4;
+    const scenario = modelCalls < 4 ? 0 : modelCalls < 8 ? 1 : 2;
+    const step = scenario === 2 ? modelCalls - 8 : modelCalls % 4;
     modelCalls++;
-    const args = scenario === 0 ? { source: 'master', target: 'release', author: 'liuhouchao' } : { source: 'master', target: 'release', title: 'fix', content: 'target_word', sha: 'bbbbbbb' };
+    const args = scenario === 0 ? { source: 'master', target: 'release', author: 'liuhouchao' } : scenario === 1 ? { source: 'master', target: 'release', title: 'fix', content: 'target_word', sha: 'bbbbbbb' } : { source: 'master', author: 'liuhouchao' };
+    if (scenario === 2 && step === 2) assert.ok(JSON.stringify(body.messages).includes(sha('f')));
     const name = ['list_branches', 'find_commits', 'prepare_cherry_pick'][step];
-    const message = step === 3 ? { role: 'assistant', content: '已准备清单，请核对。' } : { role: 'assistant', content: null, tool_calls: [{ id: `call-${modelCalls}`, type: 'function', function: { name, arguments: JSON.stringify(step === 0 ? {} : args) } }] };
+    const finished = scenario === 2 ? step === 2 : step === 3;
+    const message = finished ? { role: 'assistant', content: scenario === 2 ? '最近一条是 latest fix。' : '已准备清单，请核对。' } : { role: 'assistant', content: null, tool_calls: [{ id: `call-${modelCalls}`, type: 'function', function: { name, arguments: JSON.stringify(step === 0 ? {} : args) } }] };
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ id: `chat-${modelCalls}`, object: 'chat.completion', created: 1, model: 'tool-model', choices: [{ index: 0, message, finish_reason: step === 3 ? 'stop' : 'tool_calls' }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } }));
+    res.end(JSON.stringify({ id: `chat-${modelCalls}`, object: 'chat.completion', created: 1, model: 'tool-model', choices: [{ index: 0, message, finish_reason: finished ? 'stop' : 'tool_calls' }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } }));
   });
   const gatewayPort = await listen(gateway), appPort = await freePort();
   const base = `http://127.0.0.1:${appPort}`, gitlabBase = `http://127.0.0.1:${gitlabPort}`;
@@ -85,6 +91,13 @@ test('对话工具按作者、标题、内容和 SHA 准备清单，确认后才
     targetHead = sha('e');
     response = await post('/api/agent/confirm', { proposalId: second.proposal.id }, headers);
     assert.equal(response.status, 400);
+    assert.equal(cherryCalls, 2);
+    response = await post('/api/agent/chat', { message: 'liuhouchao 在 master 分支的最后一次提交是什么？' }, headers);
+    assert.equal(response.status, 200);
+    const lookup = await response.json();
+    assert.deepEqual(lookup.toolsUsed, ['list_branches', 'find_commits']);
+    assert.equal(lookup.proposal, null);
+    assert.match(lookup.reply, /latest fix/);
     assert.equal(cherryCalls, 2);
   } finally { child.kill(); await close(gitlab); await close(gateway); }
 });

@@ -284,15 +284,24 @@ async function commitDiffContains(s, commit, query) {
 }
 async function findMatchingCommits(s, input) {
   const { source, target } = input;
-  safeRef(source); safeRef(target);
-  if (!s.branches.includes(source) || !s.branches.includes(target) || source === target) throw new Error('来源分支与目标分支必须是当前项目中的两个不同分支');
+  safeRef(source);
+  if (!s.branches.includes(source)) throw new Error('来源分支不存在');
+  if (target !== undefined) {
+    safeRef(target);
+    if (!s.branches.includes(target) || source === target) throw new Error('来源分支与目标分支必须是当前项目中的两个不同分支');
+  }
   const criteria = Object.fromEntries(['author', 'title', 'content', 'sha'].map(key => [key, String(input[key] || '').trim()]));
   if (Object.values(criteria).some(value => value.length > 200)) throw new Error('检索条件过长');
   if (criteria.sha && !/^[0-9a-f]{7,64}$/i.test(criteria.sha)) throw new Error('SHA 应为至少 7 位十六进制字符');
   const raw = [];
   let historyTruncated = false;
   for (let page = 1; page <= 10; page++) {
-    const result = await commits(s, target, source, page, true);
+    const result = target === undefined
+      ? await gitlabGet(s.apiBase, s.token, `projects/${s.projectId}/repository/commits?ref_name=${encodeURIComponent(source)}&per_page=100&page=${page}`, s.authType).then(list => {
+          if (!Array.isArray(list)) throw new Error('GitLab 提交列表格式不正确');
+          return { commits: list.map(c => ({ id: c.id, shortId: c.short_id, title: c.title, message: c.message, createdAt: c.created_at, author: c.author_name, authorEmail: c.author_email })), hasMore: list.length === 100 };
+        })
+      : await commits(s, target, source, page, true);
     raw.push(...result.commits);
     if (!result.hasMore) break;
     if (page === 10) historyTruncated = true;
@@ -310,9 +319,11 @@ async function findMatchingCommits(s, input) {
     if (content && !String(item.message || '').toLowerCase().includes(content) && !await commitDiffContains(s, item.id, content)) continue;
     matches.push({ id: item.id, shortId: item.shortId, title: item.title, createdAt: item.createdAt, author: item.author });
   }
-  return { source, target, criteria, scanned: raw.length, candidateCount: candidates.length, tooMany: matches.length > 20, historyTruncated, contentSearchTruncated, commits: matches.reverse().slice(0, 20) };
+  matches.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  return { source, target: target || null, criteria, scanned: raw.length, candidateCount: candidates.length, tooMany: matches.length > 20, historyTruncated, contentSearchTruncated, commits: matches.slice(0, 20) };
 }
 async function prepareAgentSelection(s, input, cached) {
+  if (!input.target) throw new Error('遴选需要指定目标分支');
   const found = cached || await findMatchingCommits(s, input);
   if (found.tooMany) throw new Error('匹配提交超过 20 条，请缩小作者或分支范围后再试');
   if (found.historyTruncated) throw new Error('来源分支独有历史超过 1000 条，尚未扫描完；请缩小范围，避免遗漏提交');
@@ -320,7 +331,7 @@ async function prepareAgentSelection(s, input, cached) {
   if (!found.commits.length) throw new Error(`在 ${found.source} 相对 ${found.target} 独有的历史中，没有找到匹配的提交`);
   const state = await targetStatus(s, found.target);
   if (!state.canPush) throw new Error(`当前账号不能直接写入目标分支 ${found.target}`);
-  const proposal = { id: crypto.randomUUID(), source: found.source, target: found.target, criteria: found.criteria, targetHead: state.head, commits: found.commits.map(c => ({ id: c.id, title: c.title || '无标题', author: c.author || '', createdAt: c.createdAt || '' })), expiresAt: Date.now() + 600000 };
+  const proposal = { id: crypto.randomUUID(), source: found.source, target: found.target, criteria: found.criteria, targetHead: state.head, commits: found.commits.toReversed().map(c => ({ id: c.id, title: c.title || '无标题', author: c.author || '', createdAt: c.createdAt || '' })), expiresAt: Date.now() + 600000 };
   s.agentPending = proposal;
   return { proposal: { id: proposal.id, source: proposal.source, target: proposal.target, criteria: proposal.criteria, commits: proposal.commits, expiresAt: proposal.expiresAt }, message: '已生成待确认清单，尚未写入目标分支' };
 }
