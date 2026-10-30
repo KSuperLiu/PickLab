@@ -437,7 +437,7 @@ async function route(req, res) {
       if (req.method === 'GET') { json(res, 200, publicAiConfig(auth.ai)); return; }
       if (req.method === 'POST') {
         const input = await body(req);
-        if (!input.apiKey && auth.ai?.provider === input.provider) input.apiKey = auth.ai.apiKey;
+        if (!input.apiKey && input.keySource !== 'env' && auth.ai?.provider === input.provider && auth.ai.keySource !== 'env') input.apiKey = auth.ai.apiKey;
         const discover = input.provider === 'litellm' && !String(input.model || '').trim();
         if (discover) input.model = '__discover__';
         const config = aiConfig(input);

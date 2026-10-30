@@ -20,11 +20,20 @@ npm start
 选择并预览一条提交后，可以在“AI 分析提交”中配置服务：
 
 - **OpenRouter**：填写自己的 OpenRouter Key，模型默认 `openrouter/auto`。一个 Key 可通过 OpenRouter 调用其支持的多家模型，实际可用模型、费用由 OpenRouter 账户决定。
-- **LiteLLM**：填写 LiteLLM 网关地址（默认 `http://127.0.0.1:4000/v1`）和自己的虚拟 Key。模型名称可留空，PickLab 会从网关读取可用模型并选第一个；也可填写管理员配置的模型别名。LiteLLM 网关管理员需要先配置上游模型及凭据。
+- **LiteLLM**：填写 LiteLLM 网关地址（默认 `http://127.0.0.1:4000/v1`）和自己的虚拟 Key，或勾选“使用服务端环境变量 `LITELLM_API_KEY`”。模型名称可留空，PickLab 会从网关读取可用模型并选第一个；也可填写管理员配置的模型别名。LiteLLM 网关管理员需要先配置上游模型及凭据。
+
+使用环境变量时，请先在**运行 PickLab 服务的电脑和进程**中设置 `LITELLM_API_KEY`，再启动或重启 PickLab。例如在 PowerShell 中：
+
+```powershell
+$env:LITELLM_API_KEY = '你的 LiteLLM 虚拟 Key'
+npm start
+```
+
+如果使用 Windows 双击启动文件，可在系统的“环境变量”设置中创建用户变量 `LITELLM_API_KEY`，然后重新打开启动文件。网页勾选后不会读取或显示该变量的值；服务端在保存配置时检查它是否存在。这个环境变量由同一台 PickLab 服务上的所有用户共用，因此共享部署时应确认是否允许共用该网关身份。
 
 点击“保存 AI 配置”后，勾选“我同意将当前提交差异发送到所选 AI 服务”，再点击“分析当前提交”。AI 只分析提交，不会更改 GitLab 分支。每次分析都要重新勾选同意。发送内容最多约 3 万字符、30 个文件；超出时结果会提示差异已截断。二进制和 GitLab 未提供的差异无法供模型审阅。AI 输出只作辅助判断，执行遴选仍需 GitLab 的检查和你的确认。
 
-AI Key 只保存在本机服务当前 GitLab 登录会话的内存中，不写入浏览器缓存或操作记录；退出登录或重启服务会清除。使用远端 LiteLLM 网关时，请确认网关地址；HTTP 地址会以未加密方式传输 Key 和提交差异。
+手动填写的 AI Key 只保存在本机服务当前 GitLab 登录会话的内存中，不写入浏览器缓存或操作记录；退出登录或重启服务会清除。环境变量模式只在会话中记录 Key 来源，实际 Key 始终从服务进程环境读取。使用远端 LiteLLM 网关时，请确认网关地址；HTTP 地址会以未加密方式传输 Key 和提交差异。
 
 接入使用 [Vercel AI SDK](https://ai-sdk.dev/docs/ai-sdk-core/generating-text)、[OpenRouter AI SDK Provider](https://ai-sdk.dev/providers/community-providers/openrouter) 和 [LiteLLM OpenAI 兼容网关](https://docs.litellm.ai/docs/proxy/docker_quick_start)。
 

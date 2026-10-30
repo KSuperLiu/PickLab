@@ -140,7 +140,7 @@ test('每位用户使用自己的个人令牌登录并查询自己的仓库', as
   });
   const gitlabPort = await listen(gitlab), appPort = await freePort();
   const base = `http://127.0.0.1:${appPort}`, gitlabUrl = `http://127.0.0.1:${gitlabPort}/`;
-  const child = spawn(process.execPath, ['server.js'], { cwd: new URL('.', import.meta.url), env: { ...process.env, PORT: String(appPort), GITLAB_BASE_URL: '', GITLAB_OAUTH_CLIENT_ID: '', PICKLAB_DATA_DIR: testDataDir }, stdio: 'ignore' });
+  const child = spawn(process.execPath, ['server.js'], { cwd: new URL('.', import.meta.url), env: { ...process.env, PORT: String(appPort), GITLAB_BASE_URL: '', GITLAB_OAUTH_CLIENT_ID: '', PICKLAB_DATA_DIR: testDataDir, LITELLM_API_KEY: 'server-only-key' }, stdio: 'ignore' });
   try {
     await ready(base);
     const noHttpConfirm = await fetch(`${base}/api/recent`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: gitlabUrl, token: 'alice-token', allowInsecure: false }) });
@@ -191,6 +191,8 @@ test('每位用户使用自己的个人令牌登录并查询自己的仓库', as
     assert.equal(r.status, 200); assert.equal((await r.json()).model, 'openrouter/auto');
     r = await fetch(`${base}/api/ai/config`, { headers });
     const aiState = await r.text(); assert.doesNotMatch(aiState, /private-ai-key/);
+    r = await fetch(`${base}/api/ai/config`, { method: 'POST', headers, body: JSON.stringify({ provider: 'litellm', keySource: 'env', model: 'team-model', baseURL: 'http://127.0.0.1:4000' }) });
+    assert.equal(r.status, 200); const envConfig = await r.text(); assert.match(envConfig, /"keySource":"env"/); assert.doesNotMatch(envConfig, /server-only-key/);
     r = await fetch(`${base}/api/ai/config`, { headers: { cookie: results[1].cookie } });
     assert.equal((await r.json()).configured, false);
     r = await fetch(`${base}/api/ai/review`, { method: 'POST', headers, body: JSON.stringify({ ...payload, consent: false }) });
