@@ -18,7 +18,6 @@ test('浏览器脚本可以解析', async () => {
 
 test('GitLab 地址首次为空，成功提交后可在本机恢复', async () => {
   const html = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8');
-  assert.doesNotMatch(html, /git\.wckj\.com/);
   const source = html.match(/const addressKey='picklab:lastProjectUrl';[\s\S]*?(?=const transport=)/)?.[0];
   assert.ok(source);
   const saved = new Map(), field = { value: '', placeholder: '' };
@@ -37,7 +36,7 @@ test('来源分支优先选择 master、main，并与目标分支不同', async 
   const source = html.match(/function optionize\(branches\)\{[\s\S]*?\n\}/)?.[0];
   assert.ok(source);
   for (const [branches, expectedTarget, expectedSource] of [
-    [['master_picktest', 'master'], 'master_picktest', 'master'],
+    [['staging', 'master'], 'staging', 'master'],
     [['feature', 'main'], 'feature', 'main'],
     [['feature', 'master', 'main'], 'main', 'master'],
     [['feature', 'develop'], 'feature', 'develop']

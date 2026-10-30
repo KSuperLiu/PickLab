@@ -23,7 +23,7 @@ test('LiteLLM 配置只返回非敏感字段，并通过虚拟 Key 读取模型'
 test('Agent 依次调用分支、提交查询、准备遴选工具，不自行写入分支', async () => {
   const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
   const toolCall = (name, input, index) => ({ content: [{ type: 'tool-call', toolCallId: `call-${index}`, toolName: name, input: JSON.stringify(input) }], finishReason: { unified: 'tool-calls', raw: 'tool_calls' }, usage, warnings: [] });
-  const args = { source: 'master', target: 'release', author: 'liuhouchao' };
+  const args = { source: 'master', target: 'release', author: 'alice' };
   const model = new MockLanguageModelV3({ doGenerate: [
     toolCall('list_branches', {}, 1),
     toolCall('find_commits', args, 2),
@@ -31,7 +31,7 @@ test('Agent 依次调用分支、提交查询、准备遴选工具，不自行�
     { content: [{ type: 'text', text: '已准备清单，请核对后确认。' }], finishReason: { unified: 'stop', raw: 'stop' }, usage, warnings: [] }
   ] });
   const calls = [];
-  const result = await runAgent({}, [{ role: 'user', content: '把 liuhouchao 在 master 的提交遴选到 release' }], {
+  const result = await runAgent({}, [{ role: 'user', content: '把 alice 在 master 的提交遴选到 release' }], {
     listBranches: () => { calls.push('branches'); return { branches: ['master', 'release'] }; },
     findCommits: input => { calls.push('find'); assert.deepEqual(input, args); return { commits: [{ id: 'a'.repeat(40) }] }; },
     prepare: input => { calls.push('prepare'); assert.deepEqual(input, args); return { proposal: { id: 'proposal-1' } }; }
