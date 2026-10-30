@@ -141,6 +141,25 @@ async function landings(s, commit) {
   }
   return { commit, title, branches: result };
 }
+async function checkAgentLanding(s, input) {
+  const target = safeRef(input.target), shortSha = String(input.commit || '');
+  if (!s.branches.includes(target)) throw new Error('目标分支不存在');
+  if (!/^[0-9a-f]{7,64}$/i.test(shortSha)) throw new Error('请提供至少 7 位提交 SHA');
+  const resolved = await gitlabGet(s.apiBase, s.token, `projects/${s.projectId}/repository/commits/${shortSha}`, s.authType);
+  if (!/^[0-9a-f]{40,64}$/i.test(resolved.id || '') || !resolved.id.toLowerCase().startsWith(shortSha.toLowerCase())) throw new Error('无法确定来源提交的完整 SHA');
+  const result = await landings(s, resolved.id);
+  return { commit: result.commit, title: result.title || resolved.title || '', target, ...result.branches.find(item => item.branch === target) };
+}
+function agentLandingReply(check) {
+  const prefix = `提交 ${check.commit} 在 ${check.target}`;
+  if (check.state === 'present') {
+    const method = check.via === 'original' ? '原提交存在' : check.via === 'cherry-pick' ? '检出 PickLab 遴选产生的新提交' : '检出同标题且补丁一致的提交';
+    return `${prefix}：${method}${check.resultCommit ? `（${check.resultCommit.slice(0, 8)}）` : ''}。此结果来自变更落地核验；后续提交仍可能改动或撤销相关代码。`;
+  }
+  if (check.state === 'not_found_recent') return `${prefix}：近 500 条项目提交中未检出等价提交，也没有匹配的遴选记录；无法据此断定代码未落地。`;
+  if (check.state === 'absent') return `${prefix}：操作记录中的遴选提交 ${check.resultCommit?.slice(0, 8) || ''} 已不在该分支；无法据此断定相关代码不存在。`;
+  return `${prefix}：暂无法验证是否落地。${check.state === 'unverified' ? 'GitLab 提交引用查询未完成。' : '没有可核实的遴选记录或等价补丁结果。'}`;
+}
 function cookie(name, value, maxAge) { return `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`; }
 function redirect(res, target, setCookies = []) { res.writeHead(302, { location: target, 'set-cookie': setCookies, 'cache-control': 'no-store' }); res.end(); }
 async function removeLogin(id) {
@@ -529,6 +548,8 @@ async function route(req, res) {
       s.agentPending = null;
       try {
         const cache = new Map();
+        const landingChecks = [];
+        const asksLanding = /(?:遴选到|落地到|是否落地|有没有落地|是否遴选|落地情况|是否包含)/.test(message) && /[？?吗]|是否|有没有|已|情况/.test(message);
         const find = async args => {
           const key = JSON.stringify(args);
           if (!cache.has(key)) cache.set(key, await findMatchingCommits(s, args));
@@ -538,9 +559,13 @@ async function route(req, res) {
         const result = await runAgent(config, messages, {
           listBranches: () => ({ branches: s.branches }),
           findCommits: find,
+          checkLanding: async args => { const check = await checkAgentLanding(s, args); landingChecks.push(check); return check; },
           prepare: async args => prepareAgentSelection(s, args, await find(args))
         }, { project: decodeURIComponent(s.projectId) });
-        const reply = result.text || (s.agentPending ? '已准备遴选清单，请核对后点击确认。' : '模型未返回文字，请换一个支持工具调用的模型重试。');
+        if (asksLanding) s.agentPending = null;
+        const reply = asksLanding
+          ? landingChecks.length ? landingChecks.map(agentLandingReply).join('\n') : '尚未完成变更落地核验，不能判断是否已遴选。请提供来源提交 SHA 和要核对的目标分支后重试。'
+          : result.text || (s.agentPending ? '已准备遴选清单，请核对后点击确认。' : '模型未返回文字，请换一个支持工具调用的模型重试。');
         s.agentHistory = [...messages, { role: 'assistant', content: reply }].slice(-12);
         const p = s.agentPending;
         json(res, 200, { reply, toolsUsed: result.toolsUsed, proposal: p ? { id: p.id, source: p.source, target: p.target, criteria: p.criteria, commits: p.commits, expiresAt: p.expiresAt } : null });

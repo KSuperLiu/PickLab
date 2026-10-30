@@ -9,8 +9,8 @@ const close = server => new Promise(resolve => server.close(resolve));
 async function freePort() { const server = http.createServer(); const port = await listen(server); await close(server); return port; }
 async function ready(base) { for (let i = 0; i < 40; i++) { try { if ((await fetch(base)).ok) return; } catch {} await new Promise(resolve => setTimeout(resolve, 100)); } throw new Error('PickLab 测试服务未启动'); }
 
-test('对话工具按作者、标题、内容和 SHA 准备清单，确认后才写目标分支', { timeout: 20000 }, async () => {
-  let targetHead = sha('a'), modelCalls = 0, cherryCalls = 0, diffCalls = 0;
+test('对话工具检索提交、确认后写分支，并通过落地看板核验结果', { timeout: 20000 }, async () => {
+  let targetHead = sha('a'), modelCalls = 0, cherryCalls = 0, diffCalls = 0, refCalls = 0;
   const gitlab = http.createServer(async (req, res) => {
     const route = decodeURIComponent(req.url.split('?')[0]);
     res.setHeader('content-type', 'application/json');
@@ -26,6 +26,9 @@ test('对话工具按作者、标题、内容和 SHA 准备清单，确认后才
       { id: sha('d'), short_id: 'dddddddd', title: 'other change', message: 'other change', author_name: 'someone', author_email: 'other@example.com', created_at: '2026-10-29T02:00:00Z' }
     ]));
     else if (route === `/api/v4/projects/test/repo/repository/commits/${sha('b')}/diff`) { diffCalls++; res.end(JSON.stringify([{ old_path: 'login.js', new_path: 'login.js', diff: '@@ -1 +1 @@\n-old\n+target_word\n' }])); }
+    else if (route === '/api/v4/projects/test/repo/repository/commits/bbbbbbb') res.end(JSON.stringify({ id: sha('b'), title: 'fix: login' }));
+    else if (route === `/api/v4/projects/test/repo/repository/commits/${sha('b')}/refs`) { refCalls++; res.end(JSON.stringify([{ type: 'branch', name: 'master' }])); }
+    else if (route === `/api/v4/projects/test/repo/repository/commits/${sha('c')}/refs`) { refCalls++; res.end(JSON.stringify([{ type: 'branch', name: 'release' }])); }
     else if (route === `/api/v4/projects/test/repo/repository/commits/${sha('b')}/cherry_pick` && req.method === 'POST') {
       let raw = ''; for await (const chunk of req) raw += chunk;
       const input = JSON.parse(raw); cherryCalls++;
@@ -40,14 +43,14 @@ test('对话工具按作者、标题、内容和 SHA 准备清单，确认后才
     const body = JSON.parse(raw);
     assert.equal(body.model, 'tool-model');
     assert.ok(body.tools.some(x => x.function.name === 'prepare_cherry_pick'));
-    const scenario = modelCalls < 4 ? 0 : modelCalls < 8 ? 1 : 2;
-    const step = scenario === 2 ? modelCalls - 8 : modelCalls % 4;
+    const scenario = modelCalls < 4 ? 0 : modelCalls < 8 ? 1 : modelCalls < 11 ? 2 : modelCalls < 13 ? 3 : 4;
+    const step = scenario === 2 ? modelCalls - 8 : scenario === 3 ? modelCalls - 11 : scenario === 4 ? 0 : modelCalls % 4;
     modelCalls++;
     const args = scenario === 0 ? { source: 'master', target: 'release', author: 'liuhouchao' } : scenario === 1 ? { source: 'master', target: 'release', title: 'fix', content: 'target_word', sha: 'bbbbbbb' } : { source: 'master', author: 'liuhouchao' };
     if (scenario === 2 && step === 2) assert.ok(JSON.stringify(body.messages).includes(sha('f')));
-    const name = ['list_branches', 'find_commits', 'prepare_cherry_pick'][step];
-    const finished = scenario === 2 ? step === 2 : step === 3;
-    const message = finished ? { role: 'assistant', content: scenario === 2 ? '最近一条是 latest fix。' : '已准备清单，请核对。' } : { role: 'assistant', content: null, tool_calls: [{ id: `call-${modelCalls}`, type: 'function', function: { name, arguments: JSON.stringify(step === 0 ? {} : args) } }] };
+    const name = scenario === 3 ? 'check_landing' : ['list_branches', 'find_commits', 'prepare_cherry_pick'][step];
+    const finished = scenario === 4 || (scenario === 3 ? step === 1 : scenario === 2 ? step === 2 : step === 3);
+    const message = finished ? { role: 'assistant', content: scenario === 2 ? '最近一条是 latest fix。' : scenario >= 3 ? '我猜已经落地。' : '已准备清单，请核对。' } : { role: 'assistant', content: null, tool_calls: [{ id: `call-${modelCalls}`, type: 'function', function: { name, arguments: JSON.stringify(scenario === 3 ? { commit: 'bbbbbbb', target: 'release' } : step === 0 ? {} : args) } }] };
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ id: `chat-${modelCalls}`, object: 'chat.completion', created: 1, model: 'tool-model', choices: [{ index: 0, message, finish_reason: finished ? 'stop' : 'tool_calls' }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } }));
   });
@@ -99,5 +102,18 @@ test('对话工具按作者、标题、内容和 SHA 准备清单，确认后才
     assert.equal(lookup.proposal, null);
     assert.match(lookup.reply, /latest fix/);
     assert.equal(cherryCalls, 2);
+    response = await post('/api/agent/chat', { message: '这个提交遴选到了 release 吗？' }, headers);
+    assert.equal(response.status, 200);
+    const landed = await response.json();
+    assert.deepEqual(landed.toolsUsed, ['check_landing']);
+    assert.match(landed.reply, /检出 PickLab 遴选产生的新提交/);
+    assert.match(landed.reply, /cccccccc/);
+    assert.ok(refCalls >= 2);
+    assert.equal(landed.proposal, null);
+    response = await post('/api/agent/chat', { message: '这个提交遴选到了 release 吗？' }, headers);
+    assert.equal(response.status, 200);
+    const unverified = await response.json();
+    assert.deepEqual(unverified.toolsUsed, []);
+    assert.match(unverified.reply, /尚未完成变更落地核验/);
   } finally { child.kill(); await close(gitlab); await close(gateway); }
 });
