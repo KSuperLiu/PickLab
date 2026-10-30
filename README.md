@@ -20,7 +20,7 @@ npm start
 登录 GitLab 后点击顶部的 **AI 设置**，配置分析服务；无需先连接项目。服务、网关地址、模型和 Key 都在该页面管理：
 
 - **OpenRouter**：填写自己的 OpenRouter Key，模型默认 `openrouter/auto`。一个 Key 可通过 OpenRouter 调用其支持的多家模型，实际可用模型、费用由 OpenRouter 账户决定。
-- **LiteLLM**：填写 LiteLLM 网关地址（默认 `http://127.0.0.1:4000/v1`）和自己的虚拟 Key，或勾选“使用服务端环境变量 `LITELLM_API_KEY`”。模型名称可留空，PickLab 会从网关读取可用模型并选第一个；也可填写管理员配置的模型别名。LiteLLM 网关管理员需要先配置上游模型及凭据。
+- **LiteLLM**：填写 LiteLLM 网关地址（默认 `http://127.0.0.1:4000/v1`）和自己的虚拟 Key，或勾选“使用服务端环境变量 `LITELLM_API_KEY`”。模型名称可留空，PickLab 会从网关读取可用模型并选第一个；保存后点击“读取可用模型”，可以从完整下拉框选择其他模型，再次保存。也可手动填写管理员配置的模型别名。LiteLLM 网关管理员需要先配置上游模型及凭据。
 
 使用环境变量时，请先在**运行 PickLab 服务的电脑和进程**中设置 `LITELLM_API_KEY`，再启动或重启 PickLab。例如在 PowerShell 中：
 
