@@ -34,7 +34,7 @@ export async function runAgent(config, messages, actions, options = {}) {
         execute: safe(args => actions.findCommits(args))
       }),
       check_landing: tool({
-        description: '只读核验某个提交是否已遴选或落地到目标分支。调用与变更落地看板相同的 GitLab 引用、PickLab 操作记录和等价补丁检查。接受至少 7 位 SHA 前缀，目标分支必填；返回核验状态，近期未检出不代表不存在。',
+        description: '只读核验某个提交是否已遴选或落地到目标分支。调用与变更落地看板相同的 GitLab 引用、PickLab 操作记录和等价补丁检查；如果查的是合并提交，还会分别核对直接父提交。接受至少 7 位 SHA 前缀，目标分支必填；返回核验状态，近期未检出不代表不存在，父提交落地也不等于整个合并提交落地。',
         inputSchema: z.object({ commit: z.string().regex(/^[0-9a-f]{7,64}$/i), target: branch }),
         execute: safe(args => actions.checkLanding(args))
       }),

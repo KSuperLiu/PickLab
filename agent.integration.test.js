@@ -27,8 +27,12 @@ test('对话工具检索提交、确认后写分支，并通过落地看板核�
     ]));
     else if (route === `/api/v4/projects/test/repo/repository/commits/${sha('b')}/diff`) { diffCalls++; res.end(JSON.stringify([{ old_path: 'login.js', new_path: 'login.js', diff: '@@ -1 +1 @@\n-old\n+target_word\n' }])); }
     else if (route === '/api/v4/projects/test/repo/repository/commits/bbbbbbb') res.end(JSON.stringify({ id: sha('b'), title: 'fix: login' }));
+    else if (route === '/api/v4/projects/test/repo/repository/commits/9999999' || route === `/api/v4/projects/test/repo/repository/commits/${sha('9')}`) res.end(JSON.stringify({ id: sha('9'), title: 'Merge master', parent_ids: [sha('b'), sha('d')] }));
     else if (route === `/api/v4/projects/test/repo/repository/commits/${sha('b')}/refs`) { refCalls++; res.end(JSON.stringify([{ type: 'branch', name: 'master' }])); }
     else if (route === `/api/v4/projects/test/repo/repository/commits/${sha('c')}/refs`) { refCalls++; res.end(JSON.stringify([{ type: 'branch', name: 'release' }])); }
+    else if (route === `/api/v4/projects/test/repo/repository/commits/${sha('9')}/refs` || route === `/api/v4/projects/test/repo/repository/commits/${sha('d')}/refs`) { refCalls++; res.end(JSON.stringify([{ type: 'branch', name: 'master' }])); }
+    else if (route === `/api/v4/projects/test/repo/repository/commits/${sha('9')}/diff` || route === `/api/v4/projects/test/repo/repository/commits/${sha('d')}/diff`) res.end('[]');
+    else if (route === `/api/v4/projects/test/repo/repository/commits/${sha('d')}`) res.end(JSON.stringify({ id: sha('d'), title: 'other change' }));
     else if (route === `/api/v4/projects/test/repo/repository/commits/${sha('b')}/cherry_pick` && req.method === 'POST') {
       let raw = ''; for await (const chunk of req) raw += chunk;
       const input = JSON.parse(raw); cherryCalls++;
@@ -43,14 +47,14 @@ test('对话工具检索提交、确认后写分支，并通过落地看板核�
     const body = JSON.parse(raw);
     assert.equal(body.model, 'tool-model');
     assert.ok(body.tools.some(x => x.function.name === 'prepare_cherry_pick'));
-    const scenario = modelCalls < 4 ? 0 : modelCalls < 8 ? 1 : modelCalls < 11 ? 2 : modelCalls < 13 ? 3 : 4;
-    const step = scenario === 2 ? modelCalls - 8 : scenario === 3 ? modelCalls - 11 : scenario === 4 ? 0 : modelCalls % 4;
+    const scenario = modelCalls < 4 ? 0 : modelCalls < 8 ? 1 : modelCalls < 11 ? 2 : modelCalls < 13 ? 3 : modelCalls < 14 ? 4 : 5;
+    const step = scenario === 2 ? modelCalls - 8 : scenario === 3 ? modelCalls - 11 : scenario === 4 ? 0 : scenario === 5 ? modelCalls - 14 : modelCalls % 4;
     modelCalls++;
     const args = scenario === 0 ? { source: 'master', target: 'release', author: 'alice' } : scenario === 1 ? { source: 'master', target: 'release', title: 'fix', content: 'target_word', sha: 'bbbbbbb' } : { source: 'master', author: 'alice' };
     if (scenario === 2 && step === 2) assert.ok(JSON.stringify(body.messages).includes(sha('f')));
-    const name = scenario === 3 ? 'check_landing' : ['list_branches', 'find_commits', 'prepare_cherry_pick'][step];
-    const finished = scenario === 4 || (scenario === 3 ? step === 1 : scenario === 2 ? step === 2 : step === 3);
-    const message = finished ? { role: 'assistant', content: scenario === 2 ? '最近一条是 latest fix。' : scenario >= 3 ? '我猜已经落地。' : '已准备清单，请核对。' } : { role: 'assistant', content: null, tool_calls: [{ id: `call-${modelCalls}`, type: 'function', function: { name, arguments: JSON.stringify(scenario === 3 ? { commit: 'bbbbbbb', target: 'release' } : step === 0 ? {} : args) } }] };
+    const name = scenario === 3 || scenario === 5 ? 'check_landing' : ['list_branches', 'find_commits', 'prepare_cherry_pick'][step];
+    const finished = scenario === 4 || (scenario === 3 || scenario === 5 ? step === 1 : scenario === 2 ? step === 2 : step === 3);
+    const message = finished ? { role: 'assistant', content: scenario === 2 ? '最近一条是 latest fix。' : scenario >= 3 ? '我猜已经落地。' : '已准备清单，请核对。' } : { role: 'assistant', content: null, tool_calls: [{ id: `call-${modelCalls}`, type: 'function', function: { name, arguments: JSON.stringify(scenario === 3 || scenario === 5 ? { commit: scenario === 5 ? '9999999' : 'bbbbbbb', target: 'release' } : step === 0 ? {} : args) } }] };
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ id: `chat-${modelCalls}`, object: 'chat.completion', created: 1, model: 'tool-model', choices: [{ index: 0, message, finish_reason: finished ? 'stop' : 'tool_calls' }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } }));
   });
@@ -115,5 +119,11 @@ test('对话工具检索提交、确认后写分支，并通过落地看板核�
     const unverified = await response.json();
     assert.deepEqual(unverified.toolsUsed, []);
     assert.match(unverified.reply, /尚未完成变更落地核验/);
+    response = await post('/api/agent/chat', { message: '这个合并提交遴选到了 release 吗？' }, headers);
+    assert.equal(response.status, 200);
+    const merge = await response.json();
+    assert.deepEqual(merge.toolsUsed, ['check_landing']);
+    assert.match(merge.reply, /合并提交本身尚未核实为已遴选/);
+    assert.match(merge.reply, /bbbbbbbb.*已遴选.*cccccccc/);
   } finally { child.kill(); await close(gitlab); await close(gateway); }
 });

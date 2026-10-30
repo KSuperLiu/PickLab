@@ -148,13 +148,30 @@ async function checkAgentLanding(s, input) {
   const resolved = await gitlabGet(s.apiBase, s.token, `projects/${s.projectId}/repository/commits/${shortSha}`, s.authType);
   if (!/^[0-9a-f]{40,64}$/i.test(resolved.id || '') || !resolved.id.toLowerCase().startsWith(shortSha.toLowerCase())) throw new Error('无法确定来源提交的完整 SHA');
   const result = await landings(s, resolved.id);
-  return { commit: result.commit, title: result.title || resolved.title || '', target, ...result.branches.find(item => item.branch === target) };
+  const direct = result.branches.find(item => item.branch === target);
+  const parents = [];
+  if (direct.state !== 'present' && Array.isArray(resolved.parent_ids) && resolved.parent_ids.length > 1) {
+    for (const parent of resolved.parent_ids.slice(0, 2)) {
+      if (!/^[0-9a-f]{40,64}$/i.test(parent)) continue;
+      try {
+        const checked = await landings(s, parent);
+        const item = checked.branches.find(branch => branch.branch === target);
+        parents.push({ commit: parent, title: checked.title, state: item.state, via: item.via, resultCommit: item.resultCommit });
+      } catch { parents.push({ commit: parent, state: 'unverified' }); }
+    }
+  }
+  return { commit: result.commit, title: result.title || resolved.title || '', target, ...direct, parents, parentsTruncated: Array.isArray(resolved.parent_ids) && resolved.parent_ids.length > 2 };
 }
 function agentLandingReply(check) {
   const prefix = `提交 ${check.commit} 在 ${check.target}`;
   if (check.state === 'present') {
     const method = check.via === 'original' ? '原提交存在' : check.via === 'cherry-pick' ? '检出 PickLab 遴选产生的新提交' : '检出同标题且补丁一致的提交';
     return `${prefix}：${method}${check.resultCommit ? `（${check.resultCommit.slice(0, 8)}）` : ''}。此结果来自变更落地核验；后续提交仍可能改动或撤销相关代码。`;
+  }
+  const landedParents = (check.parents || []).filter(parent => parent.state === 'present');
+  if (landedParents.length) {
+    const details = landedParents.map(parent => `${parent.commit.slice(0, 8)} ${parent.via === 'original' ? '原提交存在' : parent.via === 'cherry-pick' ? '已遴选' : '检出等价补丁'}${parent.resultCommit ? `（${parent.resultCommit.slice(0, 8)}）` : ''}`).join('；');
+    return `${prefix}：合并提交本身尚未核实为已遴选；其父提交中 ${details}。这能确认这些父提交的改动落地，不能据此认定整个合并提交的所有改动都已落地${check.parentsTruncated ? '；另有父提交尚未检查' : ''}。`;
   }
   if (check.state === 'not_found_recent') return `${prefix}：近 500 条项目提交中未检出等价提交，也没有匹配的遴选记录；无法据此断定代码未落地。`;
   if (check.state === 'absent') return `${prefix}：操作记录中的遴选提交 ${check.resultCommit?.slice(0, 8) || ''} 已不在该分支；无法据此断定相关代码不存在。`;
