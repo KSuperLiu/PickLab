@@ -195,8 +195,8 @@ test('每位用户使用自己的个人令牌登录并查询自己的仓库', as
     assert.equal(r.status, 200); const envConfig = await r.text(); assert.match(envConfig, /"keySource":"env"/); assert.doesNotMatch(envConfig, /server-only-key/);
     r = await fetch(`${base}/api/ai/config`, { headers: { cookie: results[1].cookie } });
     assert.equal((await r.json()).configured, false);
-    r = await fetch(`${base}/api/ai/review`, { method: 'POST', headers, body: JSON.stringify({ ...payload, consent: false }) });
-    assert.match((await r.json()).error, /确认将提交差异发送/);
+    r = await fetch(`${base}/api/agent/confirm`, { method: 'POST', headers, body: JSON.stringify({ proposalId: 'not-approved' }) });
+    assert.match((await r.json()).error, /清单已失效/);
     r = await fetch(`${base}/api/check`, { method: 'POST', headers, body: JSON.stringify(payload) });
     assert.equal(r.status, 200); assert.deepEqual(await r.json(), { ok: true });
     assert.equal(targetOid, 'a'.repeat(40)); assert.deepEqual(cherryCalls, [{ branch: 'main', dry_run: true }]);

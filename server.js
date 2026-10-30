@@ -4,7 +4,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { aiConfig, publicAiConfig, liteLLMModels, reviewCommit } from './ai.js';
+import { aiConfig, publicAiConfig, liteLLMModels } from './ai.js';
+import { runAgent } from './agent.js';
 
 const port = Number(process.env.PORT || 4173);
 const sessions = new Map();
@@ -269,7 +270,59 @@ async function commits(s, target, source, page = 1, onlyMissing = true) {
   s.allowedCommits ||= new Map();
   s.commitTitles ||= new Map();
   for (const c of list) { s.allowedCommits.set(c.id, source); s.commitTitles.set(c.id, c.title || '无标题'); }
-  return { commits: list.map(c => ({ id: c.id, shortId: c.short_id, title: c.title, createdAt: c.created_at, author: c.author_name })), hasMore: list.length === 100, onlyMissing };
+  return { commits: list.map(c => ({ id: c.id, shortId: c.short_id, title: c.title, message: c.message, createdAt: c.created_at, author: c.author_name, authorEmail: c.author_email })), hasMore: list.length === 100, onlyMissing };
+}
+async function commitDiffContains(s, commit, query) {
+  for (let page = 1; page <= 10; page++) {
+    const files = await gitlabGet(s.apiBase, s.token, `projects/${s.projectId}/repository/commits/${commit}/diff?per_page=100&page=${page}`, s.authType);
+    if (!Array.isArray(files)) throw new Error('GitLab 提交差异格式不正确');
+    if (files.some(file => String(file.diff || '').toLowerCase().includes(query))) return true;
+    if (files.some(file => file.too_large || file.collapsed)) throw new Error('部分提交差异被 GitLab 截断，无法完整检索代码内容');
+    if (files.length < 100) return false;
+  }
+  throw new Error('提交差异超过 1000 个文件，无法完整检索代码内容');
+}
+async function findMatchingCommits(s, input) {
+  const { source, target } = input;
+  safeRef(source); safeRef(target);
+  if (!s.branches.includes(source) || !s.branches.includes(target) || source === target) throw new Error('来源分支与目标分支必须是当前项目中的两个不同分支');
+  const criteria = Object.fromEntries(['author', 'title', 'content', 'sha'].map(key => [key, String(input[key] || '').trim()]));
+  if (Object.values(criteria).some(value => value.length > 200)) throw new Error('检索条件过长');
+  if (criteria.sha && !/^[0-9a-f]{7,64}$/i.test(criteria.sha)) throw new Error('SHA 应为至少 7 位十六进制字符');
+  const raw = [];
+  let historyTruncated = false;
+  for (let page = 1; page <= 10; page++) {
+    const result = await commits(s, target, source, page, true);
+    raw.push(...result.commits);
+    if (!result.hasMore) break;
+    if (page === 10) historyTruncated = true;
+  }
+  const author = criteria.author.toLowerCase(), title = criteria.title.toLowerCase(), content = criteria.content.toLowerCase(), sha = criteria.sha.toLowerCase();
+  const candidates = raw.filter(item => {
+    const name = String(item.author || '').toLowerCase(), email = String(item.authorEmail || '').toLowerCase();
+    return (!author || name === author || email === author || email.split('@')[0] === author)
+      && (!title || String(item.title || '').toLowerCase().includes(title))
+      && (!sha || item.id.toLowerCase().startsWith(sha));
+  });
+  const contentSearchTruncated = Boolean(content && candidates.length > 50);
+  const matches = [];
+  for (const item of content ? candidates.slice(0, 50) : candidates) {
+    if (content && !String(item.message || '').toLowerCase().includes(content) && !await commitDiffContains(s, item.id, content)) continue;
+    matches.push({ id: item.id, shortId: item.shortId, title: item.title, createdAt: item.createdAt, author: item.author });
+  }
+  return { source, target, criteria, scanned: raw.length, candidateCount: candidates.length, tooMany: matches.length > 20, historyTruncated, contentSearchTruncated, commits: matches.reverse().slice(0, 20) };
+}
+async function prepareAgentSelection(s, input, cached) {
+  const found = cached || await findMatchingCommits(s, input);
+  if (found.tooMany) throw new Error('匹配提交超过 20 条，请缩小作者或分支范围后再试');
+  if (found.historyTruncated) throw new Error('来源分支独有历史超过 1000 条，尚未扫描完；请缩小范围，避免遗漏提交');
+  if (found.contentSearchTruncated) throw new Error('代码内容检索候选超过 50 条，尚未扫描完；请增加作者、标题或 SHA 条件');
+  if (!found.commits.length) throw new Error(`在 ${found.source} 相对 ${found.target} 独有的历史中，没有找到匹配的提交`);
+  const state = await targetStatus(s, found.target);
+  if (!state.canPush) throw new Error(`当前账号不能直接写入目标分支 ${found.target}`);
+  const proposal = { id: crypto.randomUUID(), source: found.source, target: found.target, criteria: found.criteria, targetHead: state.head, commits: found.commits.map(c => ({ id: c.id, title: c.title || '无标题', author: c.author || '', createdAt: c.createdAt || '' })), expiresAt: Date.now() + 600000 };
+  s.agentPending = proposal;
+  return { proposal: { id: proposal.id, source: proposal.source, target: proposal.target, criteria: proposal.criteria, commits: proposal.commits, expiresAt: proposal.expiresAt }, message: '已生成待确认清单，尚未写入目标分支' };
 }
 async function diff(s, target, source, commit) {
   safeRef(target); safeRef(source);
@@ -329,6 +382,7 @@ async function batchCherryPick(s, input) {
   try {
     let state = await targetStatus(s, target);
     if (!state.canPush) throw new Error(`当前账号不能直接写入目标分支 ${target}`);
+    if (input.expectedHead && state.head !== input.expectedHead) throw new Error('目标分支在生成遴选清单后发生变化，请重新查询');
     const completed = [];
     for (let index = 0; index < commits.length; index++) {
       const commit = commits[index];
@@ -454,15 +508,46 @@ async function route(req, res) {
     }
     const s = getSession(req);
     await refreshRepoToken(s);
-    if (req.method === 'POST' && url.pathname === '/api/ai/review') {
-      const input = await body(req);
+    if (req.method === 'POST' && url.pathname === '/api/agent/chat') {
       const config = oauthSession(req)?.ai;
-      if (!config) throw new Error('请先配置 AI 服务');
-      if (input.consent !== true) throw new Error('请先确认将提交差异发送给 AI 服务');
-      const d = await diff(s, input.target, input.source, input.commit);
-      try { json(res, 200, await reviewCommit(config, s.commitTitles?.get(input.commit), input.commit, d.files)); }
-      catch (e) { console.error('AI 分析失败：', e?.name || 'Error'); throw new Error('AI 分析失败，请检查网关地址、Key、模型名称和服务状态'); }
+      if (!config) throw new Error('请先在 AI 设置中配置支持工具调用的模型');
+      const input = await body(req), message = String(input.message || '').trim();
+      if (!message || message.length > 1000) throw new Error('请输入 1 至 1000 字的请求');
+      if (s.agentRunning) throw new Error('Agent 正在处理上一条消息，请稍候');
+      s.agentRunning = true;
+      s.agentPending = null;
+      try {
+        const cache = new Map();
+        const find = async args => {
+          const key = JSON.stringify(args);
+          if (!cache.has(key)) cache.set(key, await findMatchingCommits(s, args));
+          return cache.get(key);
+        };
+        const messages = [...(s.agentHistory || []), { role: 'user', content: message }];
+        const result = await runAgent(config, messages, {
+          listBranches: () => ({ branches: s.branches }),
+          findCommits: find,
+          prepare: async args => prepareAgentSelection(s, args, await find(args))
+        }, { project: decodeURIComponent(s.projectId) });
+        const reply = result.text || (s.agentPending ? '已准备遴选清单，请核对后点击确认。' : '模型未返回文字，请换一个支持工具调用的模型重试。');
+        s.agentHistory = [...messages, { role: 'assistant', content: reply }].slice(-12);
+        const p = s.agentPending;
+        json(res, 200, { reply, toolsUsed: result.toolsUsed, proposal: p ? { id: p.id, source: p.source, target: p.target, criteria: p.criteria, commits: p.commits, expiresAt: p.expiresAt } : null });
+      } catch (e) { s.agentPending = null; console.error('Agent 对话失败：', e?.name || 'Error'); throw new Error('Agent 请求失败，请检查 AI 模型是否支持工具调用以及网关状态'); }
+      finally { s.agentRunning = false; }
       return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/agent/confirm') {
+      const input = await body(req), p = s.agentPending;
+      if (!p || input.proposalId !== p.id || Date.now() > p.expiresAt) throw new Error('遴选清单已失效，请重新让 Agent 查询');
+      s.agentPending = null;
+      const result = await batchCherryPick(s, { mode: 'gitlab-api', source: p.source, target: p.target, commits: p.commits.map(c => c.id), expectedHead: p.targetHead });
+      const summary = result.stopped ? `已遴选 ${result.completed.length}/${p.commits.length} 条；在 ${result.stopped.commit.slice(0,8)} 停止：${result.stopped.error}` : `已将 ${result.completed.length} 条提交遴选到 ${p.target}`;
+      s.agentHistory = [...(s.agentHistory || []), { role: 'assistant', content: summary }].slice(-12);
+      json(res, 200, { ...result, summary }); return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/agent/cancel') {
+      s.agentPending = null; json(res, 200, { ok: true }); return;
     }
     if (req.method === 'GET' && url.pathname === '/api/branches') { json(res, 200, { branches: await branches(s) }); return; }
     if (req.method === 'GET' && url.pathname === '/api/target-status') { json(res, 200, await targetStatus(s, url.searchParams.get('target'))); return; }
