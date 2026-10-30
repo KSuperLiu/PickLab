@@ -187,6 +187,14 @@ test('每位用户使用自己的个人令牌登录并查询自己的仓库', as
     assert.equal(r.status, 200); const preview = await r.json(); assert.equal(preview.files[0].hunks.length, 1);
     const payload = { mode: 'gitlab-api', target: 'main', source: 'feature', commit: 'b'.repeat(40), fingerprint: preview.fingerprint };
     const headers = { 'content-type': 'application/json', 'x-session-id': connected.id, cookie: results[0].cookie };
+    r = await fetch(`${base}/api/ai/config`, { method: 'POST', headers, body: JSON.stringify({ provider: 'openrouter', apiKey: 'private-ai-key' }) });
+    assert.equal(r.status, 200); assert.equal((await r.json()).model, 'openrouter/auto');
+    r = await fetch(`${base}/api/ai/config`, { headers });
+    const aiState = await r.text(); assert.doesNotMatch(aiState, /private-ai-key/);
+    r = await fetch(`${base}/api/ai/config`, { headers: { cookie: results[1].cookie } });
+    assert.equal((await r.json()).configured, false);
+    r = await fetch(`${base}/api/ai/review`, { method: 'POST', headers, body: JSON.stringify({ ...payload, consent: false }) });
+    assert.match((await r.json()).error, /确认将提交差异发送/);
     r = await fetch(`${base}/api/check`, { method: 'POST', headers, body: JSON.stringify(payload) });
     assert.equal(r.status, 200); assert.deepEqual(await r.json(), { ok: true });
     assert.equal(targetOid, 'a'.repeat(40)); assert.deepEqual(cherryCalls, [{ branch: 'main', dry_run: true }]);

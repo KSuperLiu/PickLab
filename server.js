@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
+import { aiConfig, publicAiConfig, liteLLMModels, reviewCommit } from './ai.js';
 
 const port = Number(process.env.PORT || 4173);
 const sessions = new Map();
@@ -430,8 +431,39 @@ async function route(req, res) {
       json(res, 200, { id, branches: found });
       return;
     }
+    if (url.pathname === '/api/ai/config') {
+      const auth = oauthSession(req);
+      if (!auth) throw new Error('请先登录 GitLab');
+      if (req.method === 'GET') { json(res, 200, publicAiConfig(auth.ai)); return; }
+      if (req.method === 'POST') {
+        const input = await body(req);
+        if (!input.apiKey && auth.ai?.provider === input.provider) input.apiKey = auth.ai.apiKey;
+        const discover = input.provider === 'litellm' && !String(input.model || '').trim();
+        if (discover) input.model = '__discover__';
+        const config = aiConfig(input);
+        if (discover) { const models = await liteLLMModels(config); if (!models.length) throw new Error('LiteLLM 网关没有可用模型'); config.model = models[0]; }
+        auth.ai = config;
+        json(res, 200, publicAiConfig(auth.ai)); return;
+      }
+      if (req.method === 'DELETE') { delete auth.ai; json(res, 200, { configured: false }); return; }
+    }
+    if (req.method === 'GET' && url.pathname === '/api/ai/models') {
+      const config = oauthSession(req)?.ai;
+      if (!config) throw new Error('请先配置 AI 服务');
+      json(res, 200, { models: await liteLLMModels(config) }); return;
+    }
     const s = getSession(req);
     await refreshRepoToken(s);
+    if (req.method === 'POST' && url.pathname === '/api/ai/review') {
+      const input = await body(req);
+      const config = oauthSession(req)?.ai;
+      if (!config) throw new Error('请先配置 AI 服务');
+      if (input.consent !== true) throw new Error('请先确认将提交差异发送给 AI 服务');
+      const d = await diff(s, input.target, input.source, input.commit);
+      try { json(res, 200, await reviewCommit(config, s.commitTitles?.get(input.commit), input.commit, d.files)); }
+      catch (e) { console.error('AI 分析失败：', e?.name || 'Error'); throw new Error('AI 分析失败，请检查网关地址、Key、模型名称和服务状态'); }
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/api/branches') { json(res, 200, { branches: await branches(s) }); return; }
     if (req.method === 'GET' && url.pathname === '/api/target-status') { json(res, 200, await targetStatus(s, url.searchParams.get('target'))); return; }
     if (req.method === 'GET' && url.pathname === '/api/operations') { json(res, 200, { operations: await operations(s) }); return; }

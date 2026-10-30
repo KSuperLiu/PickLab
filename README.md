@@ -6,13 +6,27 @@
 
 ## 运行
 
-需要 Node.js 20+。克隆仓库后运行 `npm start`。Windows 用户也可以直接双击 **`启动PickLab.cmd`**：它会检查 Node.js、启动本机服务，并自动打开浏览器。运行期间保留命令行窗口；关闭窗口即停止服务。
+需要 Node.js 20+。克隆仓库后先运行 `npm ci`，再运行 `npm start`。Windows 用户也可以直接双击 **`启动PickLab.cmd`**：首次启动会自动安装依赖，然后启动本机服务并打开浏览器。运行期间保留命令行窗口；关闭窗口即停止服务。
 
 也可以在本目录手动运行：
 
 ```powershell
+npm ci
 npm start
 ```
+
+## AI 分析提交
+
+选择并预览一条提交后，可以在“AI 分析提交”中配置服务：
+
+- **OpenRouter**：填写自己的 OpenRouter Key，模型默认 `openrouter/auto`。一个 Key 可通过 OpenRouter 调用其支持的多家模型，实际可用模型、费用由 OpenRouter 账户决定。
+- **LiteLLM**：填写 LiteLLM 网关地址（默认 `http://127.0.0.1:4000/v1`）和自己的虚拟 Key。模型名称可留空，PickLab 会从网关读取可用模型并选第一个；也可填写管理员配置的模型别名。LiteLLM 网关管理员需要先配置上游模型及凭据。
+
+点击“保存 AI 配置”后，勾选“我同意将当前提交差异发送到所选 AI 服务”，再点击“分析当前提交”。AI 只分析提交，不会更改 GitLab 分支。每次分析都要重新勾选同意。发送内容最多约 3 万字符、30 个文件；超出时结果会提示差异已截断。二进制和 GitLab 未提供的差异无法供模型审阅。AI 输出只作辅助判断，执行遴选仍需 GitLab 的检查和你的确认。
+
+AI Key 只保存在本机服务当前 GitLab 登录会话的内存中，不写入浏览器缓存或操作记录；退出登录或重启服务会清除。使用远端 LiteLLM 网关时，请确认网关地址；HTTP 地址会以未加密方式传输 Key 和提交差异。
+
+接入使用 [Vercel AI SDK](https://ai-sdk.dev/docs/ai-sdk-core/generating-text)、[OpenRouter AI SDK Provider](https://ai-sdk.dev/providers/community-providers/openrouter) 和 [LiteLLM OpenAI 兼容网关](https://docs.litellm.ai/docs/proxy/docker_quick_start)。
 
 打开 `http://127.0.0.1:4173`。首次使用时 GitLab 地址为空，请输入自己的 GitLab 站点或项目地址。成功登录后，浏览器只缓存这一个地址；成功连接项目后更新为项目地址，下次打开时自动填入。个人令牌不会被缓存。每位用户输入**自己的**个人访问令牌，点击“使用我的个人令牌登录”；页面会显示该令牌对应的 GitLab 用户名，退出后清除会话。登录成功后，页面自动按当前账号的分支推送记录查询最多十个不同项目，选中并连接最近推送的项目，接着加载分支提交；“刷新最近 10 个仓库”按钮可重新查询。也可以从下拉框选择其他项目，或手动输入完整项目地址并点击“连接项目”。管理员配置 OAuth 应用 ID 后，也可点击“使用 GitLab 账号登录”，使用自己的账号授权。**服务端遴选需要个人令牌的 `api` 权限**，原有仅含 `read_api` 与 `write_repository` 的令牌不足以执行写入 API；账号也必须有目标分支的写入权限。令牌仅保存在本机进程内存中，不写入代码或浏览器存储。服务仅监听 `127.0.0.1`。
 
